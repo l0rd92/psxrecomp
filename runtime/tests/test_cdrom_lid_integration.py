@@ -26,9 +26,12 @@ def function_body(name: str) -> str:
 
 
 reinsert = function_body("debug_force_cd_reinsert")
-assert "cdrom_lid_begin_open" in reinsert
-assert "s_lid_irq_pending = 1" in reinsert
-assert "set_irq(CDIRQ_ACK)" not in reinsert
+assert "begin_tray_open_cycle()" in reinsert
+
+tray_cycle = function_body("begin_tray_open_cycle")
+assert "cdrom_lid_begin_open" in tray_cycle
+assert "s_lid_irq_pending = 1" in tray_cycle
+assert "set_irq(CDIRQ_ACK)" not in tray_cycle
 
 present = function_body("present_lid_open_irq_if_ready")
 assert "response_push(0x08)" in present
