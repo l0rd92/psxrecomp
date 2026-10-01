@@ -500,8 +500,14 @@ void dirty_ram_clear_image_baseline(void) {
  * never frees it). Intentional data patches by the translation layer are blessed
  * into it via dirty_ram_text_bless so they are not mistaken for self-modifying
  * code — see dirty_ram_text_native_ok / dirty_ram_text_bless. */
-static uint8_t *text_ref_image = NULL;
-static uint32_t text_ref_lo = 0, text_ref_hi = 0;
+#define TEXT_REF_IMAGE_CAP 4u
+typedef struct TextRefImage {
+    uint8_t *bytes;
+    uint32_t lo;
+    uint32_t hi;
+} TextRefImage;
+static TextRefImage text_ref_images[TEXT_REF_IMAGE_CAP];
+static uint32_t text_ref_image_count = 0;
 static uint32_t text_modified_bitmap[DIRTY_RAM_BITMAP_WORDS];
 static uint32_t text_diverged_bitmap[DIRTY_RAM_BITMAP_WORDS];
 static uint64_t g_text_native_blocked = 0;
@@ -517,9 +523,30 @@ void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
                                    uint32_t len) {
     if (!bytes || len == 0 || phys_lo >= RAM_LIVE) return;
     if (len > RAM_LIVE - phys_lo) len = RAM_LIVE - phys_lo;
-    text_ref_image = (uint8_t *)bytes;  /* runtime-owned mutable heap buffer */
-    text_ref_lo = phys_lo;
-    text_ref_hi = phys_lo + len;
+    uint32_t slot = text_ref_image_count;
+    for (uint32_t i = 0; i < text_ref_image_count; i++) {
+        if (text_ref_images[i].lo == phys_lo) { slot = i; continue; }
+        if (phys_lo < text_ref_images[i].hi && phys_lo + len > text_ref_images[i].lo) {
+            fprintf(stderr,
+                    "psxrecomp: refusing overlapping text reference "
+                    "0x%08X..0x%08X (existing 0x%08X..0x%08X)\n",
+                    phys_lo, phys_lo + len,
+                    text_ref_images[i].lo, text_ref_images[i].hi);
+            free((void *)bytes);
+            return;
+        }
+    }
+    if (slot == TEXT_REF_IMAGE_CAP) {
+        fprintf(stderr, "psxrecomp: text reference capacity exceeded (%u)\n",
+                TEXT_REF_IMAGE_CAP);
+        free((void *)bytes);
+        return;
+    }
+    if (slot < text_ref_image_count) free(text_ref_images[slot].bytes);
+    else text_ref_image_count++;
+    text_ref_images[slot].bytes = (uint8_t *)bytes;
+    text_ref_images[slot].lo = phys_lo;
+    text_ref_images[slot].hi = phys_lo + len;
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
     g_text_native_blocked = 0;
@@ -532,12 +559,21 @@ void dirty_ram_register_text_image(uint32_t phys_lo, const uint8_t *bytes,
     g_text_exact_last_ref = 0;
 }
 
-int dirty_ram_text_image_registered(void) { return text_ref_image != NULL; }
+int dirty_ram_text_image_registered(void) { return text_ref_image_count != 0; }
+
+static TextRefImage *text_ref_find(uint32_t phys, uint32_t len) {
+    if (len == 0 || phys >= RAM_LIVE || len > RAM_LIVE - phys) return NULL;
+    for (uint32_t i = 0; i < text_ref_image_count; i++) {
+        TextRefImage *image = &text_ref_images[i];
+        if (phys >= image->lo && phys + len <= image->hi) return image;
+    }
+    return NULL;
+}
 
 static inline void text_guard_note_write(uint32_t phys, uint32_t val, int size) {
-    if (!text_ref_image) return;
-    if (phys < text_ref_lo || phys + (uint32_t)size > text_ref_hi) return;
-    const uint8_t *ref = text_ref_image + (phys - text_ref_lo);
+    TextRefImage *image = text_ref_find(phys, (uint32_t)size);
+    if (!image) return;
+    const uint8_t *ref = image->bytes + (phys - image->lo);
     uint8_t buf[4] = { (uint8_t)val, (uint8_t)(val >> 8),
                        (uint8_t)(val >> 16), (uint8_t)(val >> 24) };
     if (memcmp(ref, buf, (size_t)size) != 0) {
@@ -547,7 +583,8 @@ static inline void text_guard_note_write(uint32_t phys, uint32_t val, int size) 
 }
 
 int dirty_ram_text_native_ok(uint32_t phys) {
-    if (!text_ref_image || phys < text_ref_lo || phys >= text_ref_hi)
+    TextRefImage *image = text_ref_find(phys, 1u);
+    if (!image)
         return !dirty_ram_is_dirty(phys);
 
     uint32_t page = phys >> DIRTY_RAM_PAGE_SHIFT;
@@ -569,8 +606,8 @@ int dirty_ram_text_native_ok(uint32_t phys) {
      * dirty_ram_text_bless) does not needlessly block a still-valid function and
      * route it to psx_unknown_dispatch. A genuine code overwrite still diverges. */
     uint32_t n = 256;
-    if (n > text_ref_hi - phys) n = text_ref_hi - phys;
-    if (memcmp(ram + phys, text_ref_image + (phys - text_ref_lo), n) == 0)
+    if (n > image->hi - phys) n = image->hi - phys;
+    if (memcmp(ram + phys, image->bytes + (phys - image->lo), n) == 0)
         return 1;
 
     text_diverged_bitmap[page >> 5] |= bit;
@@ -596,14 +633,14 @@ int dirty_ram_text_native_ok(uint32_t phys) {
 int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
                                          uint32_t count,
                                          uint32_t exec_pc) {
-    if (!text_ref_image || !lo_len_pairs || count == 0) return 0;
+    if (text_ref_image_count == 0 || !lo_len_pairs || count == 0) return 0;
     (void)exec_pc;
     int any = 0;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t phys = lo_len_pairs[i * 2u] & 0x1FFFFFFFu;
         uint32_t len = lo_len_pairs[i * 2u + 1u];
-        if (len == 0 || phys < text_ref_lo || phys >= text_ref_hi ||
-            len > text_ref_hi - phys) {
+        TextRefImage *image = text_ref_find(phys, len);
+        if (!image) {
             g_text_native_blocked++;
             return 0;
         }
@@ -627,10 +664,10 @@ int dirty_ram_text_native_ok_ranges_from(const uint32_t *lo_len_pairs,
             }
             if (clean) continue;
         }
-        if (memcmp(ram + phys, text_ref_image + (phys - text_ref_lo), len) != 0) {
+        if (memcmp(ram + phys, image->bytes + (phys - image->lo), len) != 0) {
             uint32_t off = 0;
             const uint8_t *live = ram + phys;
-            const uint8_t *ref = text_ref_image + (phys - text_ref_lo);
+            const uint8_t *ref = image->bytes + (phys - image->lo);
             while (off < len && live[off] == ref[off]) off++;
             g_text_exact_mismatches++;
             g_text_exact_last_range_lo = phys;
@@ -680,21 +717,24 @@ void dirty_ram_text_exact_mismatch_stats(uint64_t *count,
  * bit for affected pages so the guard re-evaluates against the updated reference.
  * Byte-for-byte identical writes are a no-op. */
 void dirty_ram_text_bless(uint32_t phys, const uint8_t *bytes, uint32_t len) {
-    if (!text_ref_image || !bytes || len == 0) return;
-    if (phys >= text_ref_hi || phys + len <= text_ref_lo) return;   /* out of range */
-    uint32_t lo = phys < text_ref_lo ? text_ref_lo : phys;
-    uint32_t hi = phys + len > text_ref_hi ? text_ref_hi : phys + len;
-    if (hi <= lo) return;
-    uint8_t *ref = text_ref_image + (lo - text_ref_lo);
-    const uint8_t *src = bytes + (lo - phys);
-    if (memcmp(ref, src, hi - lo) == 0) return;                     /* already in sync */
-    memcpy(ref, src, hi - lo);
-    /* Re-open the affected pages: clear the sticky diverged bit so the next
-     * dispatch re-runs the compare against the now-updated reference. */
-    uint32_t first_page = lo >> DIRTY_RAM_PAGE_SHIFT;
-    uint32_t last_page  = (hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
-    for (uint32_t page = first_page; page <= last_page; page++)
-        text_diverged_bitmap[page >> 5] &= ~(1u << (page & 31u));
+    if (!bytes || len == 0) return;
+    for (uint32_t i = 0; i < text_ref_image_count; i++) {
+        TextRefImage *image = &text_ref_images[i];
+        if (phys >= image->hi || phys + len <= image->lo) continue;
+        uint32_t lo = phys < image->lo ? image->lo : phys;
+        uint32_t hi = phys + len > image->hi ? image->hi : phys + len;
+        if (hi <= lo) continue;
+        uint8_t *ref = image->bytes + (lo - image->lo);
+        const uint8_t *src = bytes + (lo - phys);
+        if (memcmp(ref, src, hi - lo) == 0) continue;
+        memcpy(ref, src, hi - lo);
+        /* Re-open the affected pages: clear the sticky diverged bit so the next
+         * dispatch re-runs the compare against the now-updated reference. */
+        uint32_t first_page = lo >> DIRTY_RAM_PAGE_SHIFT;
+        uint32_t last_page  = (hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+        for (uint32_t page = first_page; page <= last_page; page++)
+            text_diverged_bitmap[page >> 5] &= ~(1u << (page & 31u));
+    }
 }
 
 uint64_t dirty_ram_text_native_blocked(void) { return g_text_native_blocked; }
@@ -889,17 +929,19 @@ void dirty_ram_text_guard_resync_after_restore(void) {
     memset(text_modified_bitmap, 0, sizeof(text_modified_bitmap));
     memset(text_diverged_bitmap, 0, sizeof(text_diverged_bitmap));
     g_text_diverged_pages = 0;
-    if (text_ref_image && text_ref_hi > text_ref_lo) {
-        uint32_t p0 = text_ref_lo >> DIRTY_RAM_PAGE_SHIFT;
-        uint32_t p1 = (text_ref_hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
+    for (uint32_t i = 0; i < text_ref_image_count; i++) {
+        TextRefImage *image = &text_ref_images[i];
+        if (!image->bytes || image->hi <= image->lo) continue;
+        uint32_t p0 = image->lo >> DIRTY_RAM_PAGE_SHIFT;
+        uint32_t p1 = (image->hi - 1u) >> DIRTY_RAM_PAGE_SHIFT;
         for (uint32_t p = p0; p <= p1; p++) {
             uint32_t lo = p << DIRTY_RAM_PAGE_SHIFT;
             uint32_t hi = lo + (1u << DIRTY_RAM_PAGE_SHIFT);
-            if (lo < text_ref_lo) lo = text_ref_lo;
-            if (hi > text_ref_hi) hi = text_ref_hi;
+            if (lo < image->lo) lo = image->lo;
+            if (hi > image->hi) hi = image->hi;
             if (hi > RAM_LIVE) hi = RAM_LIVE;
             if (hi <= lo) continue;
-            if (memcmp(ram + lo, text_ref_image + (lo - text_ref_lo), hi - lo) != 0)
+            if (memcmp(ram + lo, image->bytes + (lo - image->lo), hi - lo) != 0)
                 text_modified_bitmap[p >> 5] |= (1u << (p & 31u));
         }
     }

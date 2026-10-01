@@ -767,6 +767,11 @@ struct GameConfig {
     uint32_t              entry_pc;
     uint32_t              text_size;
     uint32_t              stack_base;    // initial $sp
+    // Optional additional PS-X EXE text images loaded by the guest. Paths and
+    // runtime code addresses are parallel and are used only for live-byte
+    // safety guards; loading and control transfer remain guest-owned.
+    std::vector<std::filesystem::path> secondary_exe_paths;
+    std::vector<uint32_t> secondary_load_addresses;
     // disc paths (Phase D will properly support multi-disc; for now we
     // accept either a single `disc = "..."` or `discs = [...]` and store
     // the union here).

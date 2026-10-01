@@ -19,7 +19,8 @@ def main() -> int:
     required_range_fragments = (
         "uint32_t exec_pc",
         "(void)exec_pc;",
-        "memcmp(ram + phys, text_ref_image + (phys - text_ref_lo), len)",
+        "TextRefImage *image = text_ref_find(phys, len);",
+        "memcmp(ram + phys, image->bytes + (phys - image->lo), len)",
         "if (!any)",
     )
     for fragment in required_range_fragments:
@@ -31,6 +32,10 @@ def main() -> int:
         raise AssertionError("exact-range mismatch still sticky-poisons a whole page")
     if "dirty_ram_text_native_ok_ranges_from(lo_len_pairs, count, 0u)" not in memory:
         raise AssertionError("legacy generated-code ABI is not preserved")
+    if "text_ref_image_count++" not in memory:
+        raise AssertionError("runtime cannot retain more than one text reference")
+    if "refusing overlapping text reference" not in memory:
+        raise AssertionError("ambiguous overlapping text references are not rejected")
 
     handoff = "clean_game_text_miss && interp_enter_compiled(cpu, "
     if interp.count(handoff) != 1:

@@ -12968,6 +12968,7 @@ int main(int argc, char** argv) {
      * path is resolved (arm_text_image_guard). */
     std::string text_guard_exe_path;
     uint32_t    text_guard_load_addr = 0;
+    std::vector<std::pair<std::string, uint32_t>> secondary_text_guards;
 
     /* Overlay cache init is deferred until after the launcher window so ABI
      * preflight / resident DLL loads do not delay first paint. */
@@ -13357,6 +13358,11 @@ int main(int argc, char** argv) {
              * user's disc image instead. */
             text_guard_exe_path  = gc.exe_path.string();
             text_guard_load_addr = gc.load_address;
+            secondary_text_guards.clear();
+            for (size_t i = 0; i < gc.secondary_exe_paths.size(); i++)
+                secondary_text_guards.emplace_back(
+                    gc.secondary_exe_paths[i].string(),
+                    gc.secondary_load_addresses[i]);
             /* HLE-tier scheduler subsystem replacement default (env
              * PSX_HLE_SCHEDULER still wins; latched at first dispatch). */
             psx_hle_scheduler_set_default(gc.runtime.hle_scheduler ? 1 : 0);
@@ -15427,6 +15433,8 @@ session_reboot:
     if (game_config_path)
         arm_text_image_guard(text_guard_exe_path, text_guard_load_addr,
                              disc_path_str);
+    for (const auto& guard : secondary_text_guards)
+        arm_text_image_guard(guard.first, guard.second, disc_path_str);
     /* Executable/overlay patches from enabled mods, applied once the guard is
      * armed so a patched image is never mistaken for a divergent one. */
     mod_runtime_enable_disc_patches();

@@ -1283,6 +1283,30 @@ GameConfig load_game_config(const fs::path& config_path_in) {
                    ? auto_hdr.stack_base
                    : 0x801FFFF0u);
 
+    std::vector<fs::path> secondary_exe_paths;
+    std::vector<uint32_t> secondary_load_addresses;
+    if (game.contains("secondary_exes") ||
+        game.contains("secondary_load_addresses")) {
+        if (!game.contains("secondary_exes") ||
+            !game.contains("secondary_load_addresses"))
+            throw std::runtime_error(
+                "game.toml: secondary_exes and secondary_load_addresses "
+                "must be declared together");
+        const auto paths = toml::find<std::vector<std::string>>(
+            game, "secondary_exes");
+        const auto addresses = toml::find<std::vector<std::string>>(
+            game, "secondary_load_addresses");
+        if (paths.size() != addresses.size())
+            throw std::runtime_error(
+                "game.toml: secondary_exes and secondary_load_addresses "
+                "must have the same length");
+        for (size_t i = 0; i < paths.size(); i++) {
+            secondary_exe_paths.push_back(PSXRecompV4::host_resolve(root, paths[i]));
+            secondary_load_addresses.push_back(parse_hex(
+                addresses[i], "game.secondary_load_addresses"));
+        }
+    }
+
     // Disc paths: accept either single `disc` or array `discs`.
     std::vector<fs::path> discs;
     if (game.contains("discs")) {
@@ -2185,6 +2209,8 @@ GameConfig load_game_config(const fs::path& config_path_in) {
         /*entry_pc*/         entry_pc,
         /*text_size*/        text_size,
         /*stack_base*/       stack_base,
+        /*secondary_exe_paths*/ secondary_exe_paths,
+        /*secondary_load_addresses*/ secondary_load_addresses,
         /*discs*/            discs,
         /*disc_serials*/     disc_serials,
         /*has_disc_crc*/     has_disc_crc,
