@@ -23,6 +23,7 @@ def function_body(source: str, name: str) -> str:
 
 source = SOURCE.read_text(encoding="utf-8")
 body = function_body(source, "depth24_cutover_tick")
+margin = function_body(source, "depth24_fix_trailing_margin")
 
 edge = body.index("entering_depth24")
 mode_blank = body.index("s_d24_cutover_blank = 2;", edge)
@@ -34,5 +35,16 @@ if "s_d24_prev_depth = 0;" not in body:
     raise AssertionError("leaving depth24 must re-arm mode-edge detection")
 if "s_d24_prev_depth = 1;" not in body:
     raise AssertionError("depth24 mode must latch after its entry edge")
+if "s_d24_waiting_for_upload = 1;" not in body[edge:]:
+    raise AssertionError("depth24 entry must wait for valid RGB888 upload coverage")
+
+limit = margin.index("gpu_depth24_rgb_limit")
+waiting = margin.index("s_d24_waiting_for_upload", limit)
+full_blank = margin.index("buf[i] = 0xFF000000u;", waiting)
+release = margin.index("s_d24_waiting_for_upload = 0;", full_blank)
+settle = margin.index("s_d24_cutover_blank = 2;", release)
+
+if not limit < waiting < full_blank < release < settle:
+    raise AssertionError("RGB888 scanout must stay black until upload coverage exists")
 
 print("PASS: depth24 mode entry blanks transitional RGB888 scanout.")
