@@ -533,6 +533,7 @@ static int      s_fmv_skip_hold = 0;
  * depth24 or a *long* MDEC idle so one-frame RGB888 junk never reaches the
  * window. Short inter-frame gaps must not re-arm this (BPE ~15fps flicker). */
 static int      s_d24_prev_mdec = 0;
+static int      s_d24_prev_depth = 0;
 static int      s_d24_saw_gap = 0;
 static int      s_d24_cutover_blank = 0;
 /* Savestate restore → audio pump: re-anchor last_cycles (declared early so
@@ -565,6 +566,7 @@ static void present_session_reset(void) {
     s_fmv_skip_last_mdec = 0;
     s_fmv_skip_hold = 0;
     s_d24_prev_mdec = 0;
+    s_d24_prev_depth = 0;
     s_d24_saw_gap = 0;
     s_d24_cutover_blank = 0;
     sdl_audio_fadein_left = 0;
@@ -1046,7 +1048,8 @@ extern "C" void psx_frontend_on_savestate_loaded(void) {
     gpu_depth24_on_savestate_loaded();
     s_d24_cutover_blank = 0;
     s_d24_saw_gap = 0;
-    s_d24_prev_mdec = gpu_display_is_depth24() ? 1 : 0;
+    s_d24_prev_depth = gpu_display_is_depth24() ? 1 : 0;
+    s_d24_prev_mdec = s_d24_prev_depth;
     /* Depth24 load skipped framebuffer-sized CPU→GPU uploads — including the
      * full-VRAM boot_state blit — so restage the mirror into the FBO/image
      * before present. Otherwise post-FMV menus miss texture pages. Safe
@@ -1071,6 +1074,7 @@ extern "C" void psx_frontend_on_rb_snap_loaded(void) {
     g_audio_cycle_resync = 1;
     gpu_depth24_on_savestate_loaded();
     s_d24_cutover_blank = 0;
+    s_d24_prev_depth = gpu_display_is_depth24() ? 1 : 0;
     if (media) {
         s_d24_saw_gap = 0;
         s_d24_prev_mdec = (gpu_display_is_depth24() || mdec_recently_active(8)) ? 1 : 0;
@@ -6196,14 +6200,24 @@ static void load_transition_note(int read_active, int load_active,
  * exit and long idle. */
 static void depth24_cutover_tick(int depth24) {
     const int mdec_on = depth24 && mdec_recently_active(3);
+    const int entering_depth24 = depth24 && !s_d24_prev_depth;
     /* ~0.5s @60Hz — longer than inter-frame MDEC idle in a live movie. */
     const int mdec_long_idle = depth24 && !mdec_recently_active(30);
     if (!depth24) {
+        s_d24_prev_depth = 0;
         s_d24_prev_mdec = 0;
         s_d24_cutover_blank = 0;
         s_d24_saw_gap = 1; /* next depth24+MDEC is a fresh movie cutover */
         return;
     }
+    s_d24_prev_depth = 1;
+    /* A title may enable RGB888 scanout one or more vblanks before its first
+     * MDEC upload.  The CPU mirror still contains ordinary 15-bit VRAM during
+     * that gap; presenting it as packed RGB888 produces a one-frame burst of
+     * coloured noise.  Hide the first two presents on the mode edge itself.
+     * The existing MDEC edge below then protects the first decoded frame too. */
+    if (entering_depth24 && s_d24_cutover_blank < 2)
+        s_d24_cutover_blank = 2;
     if (mdec_long_idle)
         s_d24_saw_gap = 1;
     if (s_d24_saw_gap && mdec_on && !s_d24_prev_mdec) {
