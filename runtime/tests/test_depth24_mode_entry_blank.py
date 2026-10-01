@@ -37,6 +37,8 @@ if "s_d24_prev_depth = 1;" not in body:
     raise AssertionError("depth24 mode must latch after its entry edge")
 if "s_d24_waiting_for_upload = 1;" not in body[edge:]:
     raise AssertionError("depth24 entry must wait for valid RGB888 upload coverage")
+if "s_d24_waiting_for_upload = 0;" not in body[mdec_edge:]:
+    raise AssertionError("MDEC activity must release the pre-movie waiting state")
 
 limit = margin.index("gpu_depth24_rgb_limit")
 waiting = margin.index("s_d24_waiting_for_upload", limit)

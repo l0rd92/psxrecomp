@@ -6230,6 +6230,7 @@ static void depth24_cutover_tick(int depth24) {
         s_d24_saw_gap = 1;
     if (s_d24_saw_gap && mdec_on && !s_d24_prev_mdec) {
         /* Hide the transitional present(s) that still show stale RGB888 junk. */
+        s_d24_waiting_for_upload = 0;
         s_d24_cutover_blank = 2;
         s_d24_saw_gap = 0;
     }
