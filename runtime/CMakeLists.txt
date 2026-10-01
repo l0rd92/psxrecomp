@@ -314,7 +314,10 @@ if(BUILD_TESTING)
         target_compile_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
             -ffunction-sections -fdata-sections)
         target_link_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
-            -Wl,--gc-sections
+            -Wl,--gc-sections)
+    endif()
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        target_link_options(gpu_textured_dot_nw_shift_exec_test PRIVATE
             -Wl,--error-limit=0)
     endif()
     add_test(NAME gpu_textured_dot_nw_shift_exec_test

@@ -106,19 +106,19 @@ SKIP_DIRS = {'.git', 'build', 'generated', 'node_modules', '__pycache__',
              'lib', '_deps', 'beetle-psx', 'recomp-ui', 'psxrecomp-v4',
              'ghidra', 'seeds', 'assets'}
 
-# A release packager that touches the OVERLAY CACHE must route through the
-# framework's shared staging surface rather than reimplementing it. The
+# A release packager that consumes COMPILED OVERLAY SHARDS OR THEIR CACHE TAG
+# must route through the framework's shared staging surface rather than
+# reimplementing it. Merely checking the game.toml `overlay_cache` runtime
+# switch does not consume the cache and must not trigger this rule. The
 # qualifier matters: the framework also carries packagers that stage only the
-# mod catalog (tools/package_release.ps1, tools/package_release_macos.sh,
-# tools/package_setup_host.sh -- measured 2026-09-02, none of them mentions the
-# overlay cache, the tag, or the toolchain at all). Those carry their own
+# mod catalog. Those carry their own
 # hand-written mod-catalog staging, which is the SAME duplication defect one
 # layer over, and they should be migrated to Add-ModCatalog/stage-mods too --
 # but that is a separate change with a separate proof (macOS in particular
 # cannot be built or verified here), so this test does not pretend to cover it.
 PACKAGER_RE = re.compile(r'^package_.*\.(sh|ps1)$')
 TAG_CONSUMER_RE = re.compile(
-    r'cg_?tag|CgTag|cache_tag|overlay_cache|overlay_toolchain', re.I)
+    r'cg_?tag|CgTag|cache_tag|overlay_toolchain', re.I)
 SHARED_SURFACE_RE = re.compile(r'release_overlay_stage|release_stage\.py')
 
 

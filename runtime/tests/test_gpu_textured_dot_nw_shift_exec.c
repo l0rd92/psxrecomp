@@ -15,6 +15,8 @@ uint32_t g_debug_current_func_addr;
 uint32_t g_debug_last_store_pc;
 CPUState *debug_cpu_ptr;
 int g_psx_vram_dirty_tracking;
+uint32_t g_psx_ram_size = PSX_MAIN_RAM_RETAIL_BYTES;
+uint32_t g_psx_ram_mask = PSX_MAIN_RAM_RETAIL_BYTES - 1u;
 
 static uint32_t test_ram[0x00200000u / 4u];
 
@@ -171,6 +173,19 @@ int gte_precision_load_word(uint32_t addr, uint32_t packed,
     return 0;
 }
 uint32_t sw_perspective_triangle_count(void) { return 0; }
+
+uint16_t mod_texture_packet_bank(uint32_t source, const uint32_t *words,
+                                 uint32_t count) {
+    (void)source; (void)words; (void)count;
+    return 0;
+}
+int mod_texture_packet_precision(uint32_t source, float q[3], float xy[6]) {
+    (void)source; (void)q; (void)xy;
+    return 0;
+}
+GrBackend gr_backend(void) { return GR_BACKEND_SOFTWARE; }
+int gl_renderer_select_texture_bank(uint16_t id) { (void)id; return 0; }
+int gl_renderer_texture_banks_supported(void) { return 0; }
 
 uint32_t psx_ws_widen_angle_q12(uint32_t vanilla, int extent_pixels) {
     (void)extent_pixels;
