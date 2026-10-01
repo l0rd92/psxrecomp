@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
 static int psxrecomp_game_main(int argc, char** argv) {
     const auto print_usage = [&]() {
         fmt::print("Usage: {} --config <game.toml>\n", argv[0]);
-        fmt::print("       {} <PS1-EXE file> [--seeds <file>] [--out-dir <dir>] [--strict] [--inspect]\n", argv[0]);
+        fmt::print("       {} <PS1-EXE file> [--seeds <file>] [--out-dir <dir>] [--runtime-code-segment <kseg0|kuseg>] [--strict] [--inspect]\n", argv[0]);
         fmt::print("Example: {} SCUS_942.36 --seeds seeds/functions.txt --out-dir generated --strict\n", argv[0]);
         fmt::print("\n");
         fmt::print("  --project-root <dir>  Resolve the BIOS profile (bios/SCPH1001.toml, or\n");
@@ -113,6 +113,10 @@ static int psxrecomp_game_main(int argc, char** argv) {
         fmt::print("                        <dir> instead of the CWD. Required whenever the caller\n");
         fmt::print("                        cannot choose its own CWD — e.g. compile_overlays.py,\n");
         fmt::print("                        which runs us with cwd = dirname(game.toml).\n");
+        fmt::print("  --runtime-code-segment <kseg0|kuseg>\n");
+        fmt::print("                        Emit code PCs in the segment used by a loader at\n");
+        fmt::print("                        runtime. Intended for secondary PS-X EXEs whose\n");
+        fmt::print("                        header is KSEG0 but whose parent enters via KUSEG.\n");
     };
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -213,6 +217,7 @@ static int psxrecomp_game_main(int argc, char** argv) {
     bool                  inspect_mode = false;
     bool                  overlay_mode = false;
     bool                  reachable_discovery = false;
+    std::string           runtime_code_segment = "kseg0";
     std::set<uint32_t>    ws_tag_funcs;         // [widescreen] sprite_tag_funcs
     std::set<uint32_t>    ds_funcs;             // [data_shards] funcs
     std::set<uint32_t>    mod_entry_funcs;      // trusted game-mod entry hooks
@@ -362,6 +367,15 @@ static int psxrecomp_game_main(int argc, char** argv) {
                  * needs it before this loop runs). Consume the value here so it
                  * is never mistaken for another flag's argument. */
                 ++i;
+            } else if (arg == "--runtime-code-segment" && i + 1 < argc) {
+                runtime_code_segment = argv[++i];
+                if (runtime_code_segment != "kseg0" &&
+                    runtime_code_segment != "kuseg") {
+                    fmt::print(stderr,
+                        "Invalid --runtime-code-segment '{}': expected kseg0 or kuseg\n",
+                        runtime_code_segment);
+                    return 1;
+                }
             } else if (arg == "--overlay") {
                 /* Overlay-compilation contract: this input is a runtime-captured
                  * overlay with execution evidence, so discovery is evidence-scoped
@@ -513,6 +527,30 @@ static int psxrecomp_game_main(int argc, char** argv) {
     if (!exe.has_value()) {
         fmt::print(stderr, "Failed to parse PS1-EXE: {}\n", error_msg);
         return 1;
+    }
+
+    /* A secondary PS-X EXE can carry KSEG0 link/load addresses yet be entered
+     * by its parent through the KUSEG alias. J/JAL inherit the caller PC's top
+     * nibble, so its architectural PCs and link register values are then
+     * KUSEG even though absolute data pointers remain exactly as linked.
+     *
+     * Parse and validate the original header first. This opt-in changes only
+     * the in-memory CODE address view used by discovery and emission; it never
+     * mutates the retail file, data constants, GP, stack or BSS addresses. */
+    if (runtime_code_segment == "kuseg") {
+        const uint32_t load_phys = exe->header.load_address & 0x1FFFFFFFu;
+        const uint32_t entry_phys = exe->header.initial_pc & 0x1FFFFFFFu;
+        if (load_phys >= 0x00800000u || entry_phys >= 0x00800000u) {
+            fmt::print(stderr,
+                "Cannot emit KUSEG code view outside the 8 MiB main-RAM window: "
+                "load=0x{:08X}, entry=0x{:08X}\n",
+                exe->header.load_address, exe->header.initial_pc);
+            return 1;
+        }
+        exe->header.load_address = load_phys;
+        exe->header.initial_pc = entry_phys;
+        fmt::print("Runtime code segment: KUSEG (load=0x{:08X}, entry=0x{:08X})\n",
+                   exe->header.load_address, exe->header.initial_pc);
     }
 
     // [game].text_size is the title-owned static-analysis bound. It may trim a

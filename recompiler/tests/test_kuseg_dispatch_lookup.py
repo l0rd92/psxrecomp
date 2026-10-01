@@ -29,6 +29,7 @@ Exit 0 = PASS.
 import argparse, os, re, shutil, struct, subprocess, sys, tempfile
 
 LOAD = 0x00010000          # KUSEG: no KSEG bit, the case under test
+KSEG_LOAD = 0x80010000
 PHYS_MASK = 0x1FFFFFFF
 
 
@@ -50,26 +51,32 @@ def jal(target):
     return 0x0C000000 | ((target >> 2) & 0x03FFFFFF)
 
 
-def build_exe():
+def build_exe(load=LOAD):
     # func A @ LOAD: addiu sp,-8 ; jal B ; nop ; addiu sp,8 ; jr ra ; nop
     # func B @ LOAD+0x20: jr ra ; nop
-    a = [0x27BDFFF8, jal(LOAD + 0x20), 0x00000000, 0x27BD0008, 0x03E00008, 0x00000000]
+    a = [0x27BDFFF8, jal(load + 0x20), 0x00000000, 0x27BD0008, 0x03E00008, 0x00000000]
     body = bytearray(w(a))
     body += b"\x00" * (0x20 - len(body))
     body += w([0x03E00008, 0x00000000])
-    return make_psxexe(LOAD, LOAD, bytes(body))
+    return make_psxexe(load, load, bytes(body))
 
 
-def gen_dispatch(recompiler, tmp):
+def gen_dispatch(recompiler, tmp, header_load=LOAD, runtime_segment=None):
     psx = os.path.join(tmp, "t.psx")
     seeds = os.path.join(tmp, "seeds.txt")
     out = os.path.join(tmp, "out")
     os.makedirs(out, exist_ok=True)
     with open(psx, "wb") as f:
-        f.write(build_exe())
+        f.write(build_exe(header_load))
     with open(seeds, "w") as f:
-        f.write("0x%08X\n0x%08X\n" % (LOAD, LOAD + 0x20))
-    r = subprocess.run([recompiler, psx, "--seeds", seeds, "--out-dir", out],
+        seed_load = LOAD if runtime_segment == "kuseg" else header_load
+        f.write("0x%08X\n0x%08X\n" % (seed_load, seed_load + 0x20))
+    project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    command = [recompiler, psx, "--seeds", seeds, "--out-dir", out,
+               "--project-root", project_root]
+    if runtime_segment:
+        command += ["--runtime-code-segment", runtime_segment]
+    r = subprocess.run(command,
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise SystemExit("recompiler failed:\n" + (r.stderr or r.stdout))
@@ -77,7 +84,13 @@ def gen_dispatch(recompiler, tmp):
     if not disp:
         raise SystemExit("no _dispatch.c emitted in " + out)
     with open(os.path.join(out, disp[0])) as f:
-        return f.read()
+        dispatch = f.read()
+    generated = []
+    for name in os.listdir(out):
+        if name.endswith(".c"):
+            with open(os.path.join(out, name)) as f:
+                generated.append(f.read())
+    return dispatch, "\n".join(generated)
 
 
 def main():
@@ -92,7 +105,24 @@ def main():
         raise SystemExit("recompiler not found: %s (build it first)" % args.recompiler)
 
     with tempfile.TemporaryDirectory() as tmp:
-        src = gen_dispatch(args.recompiler, tmp)
+        src, _ = gen_dispatch(args.recompiler, tmp)
+
+    # The HP1 secondary-image case: its header is linked in KSEG0, while the
+    # parent executable enters it through KUSEG. The opt-in code view must
+    # therefore emit KUSEG function addresses, JAL targets and link values.
+    with tempfile.TemporaryDirectory() as tmp:
+        forced_dispatch, forced_generated = gen_dispatch(
+            args.recompiler, tmp, KSEG_LOAD, "kuseg")
+    forced_keys = [int(x, 16) for x in re.findall(
+        r"\{0x([0-9A-Fa-f]{8})u,", forced_dispatch)]
+    if LOAD not in forced_keys or LOAD + 0x20 not in forced_keys:
+        raise SystemExit("forced KUSEG code view did not emit low-address dispatch entries")
+    if "func_00010020" not in forced_generated:
+        raise SystemExit("forced KUSEG code view did not preserve the JAL target segment")
+    if "cpu->gpr[31] = 0x0001000C" not in forced_generated:
+        raise SystemExit("forced KUSEG code view did not preserve the JAL link address")
+    if "func_80010020" in forced_generated:
+        raise SystemExit("forced KUSEG code view leaked a KSEG0 JAL target")
 
     m = re.search(r"static const PsxGameDispatchEntry\* psx_game_find_entry"
                   r"\(uint32_t addr\) \{(.*?)\n\}", src, re.DOTALL)
