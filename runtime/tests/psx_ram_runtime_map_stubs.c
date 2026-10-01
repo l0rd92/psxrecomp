@@ -6,6 +6,7 @@
  * built with -ffunction-sections/--gc-sections like mod_memory_snapshot_test)
  * drops whatever the test never reaches. */
 #include "cpu_state.h"
+#include "dirty_ram_interp.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -34,6 +35,8 @@ int psx_in_device_service;
 uint32_t g_dirty_ram_dispatch_pc_bitmap[(0x00800000u / 4u + 31u) / 32u];
 uint32_t g_dirty_ram_exec_pc_bitmap[(0x00800000u / 4u + 31u) / 32u];
 uint32_t g_dirty_ram_exec_page_bitmap[((0x00800000u / 4096u) + 31u) / 32u];
+uint32_t g_overlay_region_floor = OVERLAY_REGION_FLOOR_DEFAULT;
+uint32_t g_text_image_lo = DIRTY_RAM_KERNEL_WINDOW_END;
 
 /* ---- hooks the RAM paths notify (no behaviour under test) ------------------ */
 void debug_server_trace_mmio_write(uint32_t a, uint32_t v, uint8_t w) { (void)a; (void)v; (void)w; }

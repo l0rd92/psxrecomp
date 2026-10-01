@@ -22,6 +22,7 @@
 #include "mod_plugins.h"
 #include "boot_state.h"
 #include "cpu_state.h"
+#include "dirty_ram_interp.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -270,6 +271,39 @@ static void check_savestates(void) {
     free(expanded);
 }
 
+/* ---- 6. multiple live-text images and exact-range fallback ------------ */
+static void check_multi_image_text_guard(void) {
+    uint8_t *ram = memory_get_ram_ptr();
+    uint8_t boot_ref[16];
+    uint8_t secondary_ref[32];
+    const uint32_t boot_lo = 0x00100000u;
+    const uint32_t secondary_lo = 0x00056000u;
+    const uint32_t boot_range[] = { boot_lo, 4u };
+    const uint32_t patch_range[] = { secondary_lo + 8u, 4u };
+    const uint32_t neighbor_range[] = { secondary_lo + 12u, 4u };
+
+    memset(boot_ref, 0x11, sizeof boot_ref);
+    memset(secondary_ref, 0x22, sizeof secondary_ref);
+    memcpy(ram + boot_lo, boot_ref, sizeof boot_ref);
+    memcpy(ram + secondary_lo, secondary_ref, sizeof secondary_ref);
+    dirty_ram_register_text_image(boot_lo, boot_ref, sizeof boot_ref);
+    dirty_ram_register_text_image(secondary_lo, secondary_ref,
+                                  sizeof secondary_ref);
+
+    check(dirty_ram_text_native_ok_ranges(boot_range, 1u),
+          "primary text image starts native-valid");
+    check(dirty_ram_text_native_ok_ranges(patch_range, 1u),
+          "secondary text image starts native-valid");
+
+    psx_write_word(secondary_lo + 8u, 0x240B0180u);
+    check(!dirty_ram_text_native_ok_ranges(patch_range, 1u),
+          "secondary code write rejects its exact native range");
+    check(dirty_ram_text_native_ok_ranges(neighbor_range, 1u),
+          "secondary code write preserves a neighboring exact range");
+    check(dirty_ram_text_native_ok_ranges(boot_range, 1u),
+          "secondary code write preserves the primary image");
+}
+
 int main(void) {
     /* Process start and memory_init() without the mod: retail. */
     check_helpers_everywhere(0, "default geometry is retail 2 MiB mirroring");
@@ -291,7 +325,9 @@ int main(void) {
         check_dma(expanded);
     }
     check_savestates();
+    set_geometry(0);
+    check_multi_image_text_guard();
 
-    if (failures == 0) printf("PASS  psx_ram_runtime_map (2 and 8 MiB, real memory/DMA/savestate paths)\n");
+    if (failures == 0) printf("PASS  psx_ram_runtime_map (RAM/DMA/savestate/multi-image text paths)\n");
     return failures ? 1 : 0;
 }
