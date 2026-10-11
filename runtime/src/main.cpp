@@ -2401,6 +2401,95 @@ static std::filesystem::path exe_dir_from_argv(const char* argv0) {
     return exe_dir;
 }
 
+/* Optional title-owned startup card. Keeping this in the host frontend means
+ * it appears before the guest produces its first frame, without changing the
+ * original executable, disc data, or FMV timing. Titles opt in by shipping
+ * assets/startup-logo.png beside the runtime. */
+static void present_startup_logo(const char *argv0) {
+#if defined(PSX_SDL_NO_RENDER)
+    (void)argv0;
+#else
+    namespace fs = std::filesystem;
+    const fs::path logo_path = exe_dir_from_argv(argv0) / "assets" / "startup-logo.png";
+    std::ifstream file(logo_path, std::ios::binary | std::ios::ate);
+    if (!file.is_open()) return;
+    const std::streamoff file_size = file.tellg();
+    if (file_size <= 0 || file_size > 64 * 1024 * 1024) return;
+    std::vector<unsigned char> encoded((size_t)file_size);
+    file.seekg(0, std::ios::beg);
+    if (!file.read(reinterpret_cast<char *>(encoded.data()), file_size)) return;
+
+    int logo_w = 0, logo_h = 0, channels = 0;
+    stbi_uc *logo = stbi_load_from_memory(encoded.data(), (int)encoded.size(),
+                                          &logo_w, &logo_h, &channels, 4);
+    if (!logo || logo_w <= 0 || logo_h <= 0) {
+        if (logo) stbi_image_free(logo);
+        return;
+    }
+
+    constexpr int canvas_w = 640;
+    constexpr int canvas_h = 480;
+    constexpr int max_w = 560;
+    constexpr int max_h = 300;
+    int draw_w = max_w;
+    int draw_h = (int)((int64_t)logo_h * draw_w / logo_w);
+    if (draw_h > max_h) {
+        draw_h = max_h;
+        draw_w = (int)((int64_t)logo_w * draw_h / logo_h);
+    }
+    draw_w = std::max(1, draw_w);
+    draw_h = std::max(1, draw_h);
+    const int dst_x = (canvas_w - draw_w) / 2;
+    const int dst_y = (canvas_h - draw_h) / 2;
+    std::vector<uint32_t> canvas((size_t)canvas_w * canvas_h, 0xFF000000u);
+
+    /* Nearest-neighbour is deliberate: the supplied mark is pixel art. Alpha
+     * is composited onto black because the presentation backends consume an
+     * opaque ARGB frame. */
+    for (int y = 0; y < draw_h; ++y) {
+        const int sy = std::min(logo_h - 1, (int)((int64_t)y * logo_h / draw_h));
+        for (int x = 0; x < draw_w; ++x) {
+            const int sx = std::min(logo_w - 1, (int)((int64_t)x * logo_w / draw_w));
+            const stbi_uc *p = logo + ((size_t)sy * logo_w + sx) * 4;
+            const uint32_t a = p[3];
+            const uint32_t r = ((uint32_t)p[0] * a + 127u) / 255u;
+            const uint32_t g = ((uint32_t)p[1] * a + 127u) / 255u;
+            const uint32_t b = ((uint32_t)p[2] * a + 127u) / 255u;
+            canvas[(size_t)(dst_y + y) * canvas_w + dst_x + x] =
+                0xFF000000u | (r << 16) | (g << 8) | b;
+        }
+    }
+    stbi_image_free(logo);
+
+    if (g_gl_active) {
+        gl_renderer_present(canvas.data(), canvas_w, canvas_h, 0, 1, 0);
+    } else if (g_vk_active) {
+        vk_renderer_present_cpu(canvas.data(), canvas_w, canvas_h, 0, 1);
+    } else if (sdl_renderer && sdl_texture) {
+        const int scale = std::max(1, g_video_scale);
+        SDL_Rect src = { 0, 0, canvas_w, canvas_h };
+        SDL_Rect dst = { (g_logical_w - 640 * scale) / 2, 0,
+                         640 * scale, 480 * scale };
+        SDL_UpdateTexture(sdl_texture, &src, canvas.data(), canvas_w * (int)sizeof(uint32_t));
+        SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(sdl_renderer);
+        SDL_RenderCopy(sdl_renderer, sdl_texture, &src, &dst);
+        SDL_RenderPresent(sdl_renderer);
+    }
+    std::fprintf(stdout, "psxrecomp: startup logo %dx%d from %s\n",
+                 logo_w, logo_h, logo_path.string().c_str());
+    SDL_Delay(1400);
+
+    if (g_gl_active) gl_renderer_present_blank();
+    else if (g_vk_active) vk_renderer_present_blank();
+    else if (sdl_renderer) {
+        SDL_SetRenderDrawColor(sdl_renderer, 0, 0, 0, 255);
+        SDL_RenderClear(sdl_renderer);
+        SDL_RenderPresent(sdl_renderer);
+    }
+#endif
+}
+
 static std::filesystem::path resolve_existing_runtime_path(const char* requested,
                                                            const char* argv0) {
     namespace fs = std::filesystem;
@@ -15897,6 +15986,8 @@ session_reboot:
   }
     log_present_cadence();
   }
+
+    present_startup_logo(argv[0]);
 
     /* Register vblank presentation callback. */
     gpu_set_vblank_callback(sdl_vblank_present);
