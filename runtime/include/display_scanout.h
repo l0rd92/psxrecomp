@@ -35,6 +35,17 @@ static inline uint32_t psx_display_interlaced_rows(
     return interlaced ? rows * 2u : rows;
 }
 
+/* GPU-direct presenters sample one rectangular piece of the 1024x512 VRAM
+ * texture. A display rectangle that crosses row 511 cannot be represented by
+ * that single clamped texture rectangle; it must use the CPU staging path,
+ * whose per-pixel read implements the PS1's 512-row wrap. */
+static inline int psx_display_vram_y_wrap(uint32_t display_y,
+                                          uint32_t source_height)
+{
+    return display_y >= 512u || source_height > 512u ||
+           source_height > 512u - display_y;
+}
+
 /* Canvas-origin clipping belongs only to staged depth24 presentation.
  * Ordinary 15-bit renderers read their source rectangle directly. */
 static inline uint32_t psx_display_clip_source_height(

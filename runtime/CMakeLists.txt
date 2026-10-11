@@ -865,6 +865,9 @@ if(BUILD_TESTING)
         add_test(NAME gl_depth24_upload_order_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_gl_depth24_upload_order.py)
+        add_test(NAME vram_y_wrap_present_test
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vram_y_wrap_present.py)
         add_test(NAME depth24_mode_entry_blank_test
                  COMMAND ${Python3_EXECUTABLE}
                          ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_depth24_mode_entry_blank.py)

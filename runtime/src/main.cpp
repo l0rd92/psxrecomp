@@ -7520,6 +7520,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
         w = di.width; h = di.height;
         present_h = psx_display_present_height(
             di.depth24, h, di.screen_height);
+        const bool vram_y_wrap = psx_display_vram_y_wrap(di.display_y, h) != 0;
         /* 4:3-pinned frames: the pre-game BIOS boot, plus (once engaged) every
          * frame the widescreen layer presents native — FMV video and full-2D
          * menu/title screens. gpu_ws_present_native_43() is the single source
@@ -7581,7 +7582,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * do NOT flush_cpu_uploads (MDEC already wrote the CPU mirror; forcing
          * FBO uploads every frame cut MotK intro from ~50 to ~30 FPS). */
 #ifndef PSX_SDL_NO_RENDER
-        if (g_gl_active && g_gl_fbo_present && !di.depth24 &&
+        if (g_gl_active && g_gl_fbo_present && !di.depth24 && !vram_y_wrap &&
             !local_viewport_crop) {
             if (wide_present) {
                 /* GPU-direct native-wide present: blit the displayed buffer's
@@ -7619,6 +7620,21 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
                 vk_renderer_present_cpu(sdl_pixel_buf, (int)present_w,
                                         (int)present_h,
                                         0 /* nearest */, fmv_frame ? 1 : 0);
+            } else if (vram_y_wrap) {
+                /* A single Vulkan image rect cannot cross the 512-row VRAM
+                 * boundary. Keep this rare screen-adjust case correct by
+                 * staging the wrapped source through the CPU mirror. */
+                vk_renderer_sync_cpu();
+                for (uint32_t y = 0; y < h; y++) {
+                    for (uint32_t x = 0; x < present_w; x++) {
+                        sdl_pixel_buf[y * present_w + x] =
+                            gpu_display_pixel_argb(&di, x, y);
+                    }
+                }
+                vk_renderer_present_cpu(sdl_pixel_buf, (int)present_w,
+                                        (int)present_h,
+                                        g_video_aa ? 1 : 0,
+                                        (fmv_frame || nw_pin) ? 1 : 0);
             } else if (wide_present &&
                        vk_renderer_present_wide((int)di.display_x, (int)di.display_y,
                                                 (int)h, g_video_aa ? 1 : 0)) {

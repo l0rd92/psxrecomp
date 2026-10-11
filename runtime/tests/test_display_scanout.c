@@ -23,6 +23,12 @@ static void test_present_height(void)
     assert(psx_display_clip_source_height(0, 450, 512, 126) == 450);
     assert(psx_display_clip_source_height(1, 450, 512, 126) == 386);
     assert(psx_display_clip_source_height(1, 450, 512, 512) == 0);
+    assert(!psx_display_vram_y_wrap(0, 240));
+    assert(!psx_display_vram_y_wrap(256, 240));
+    assert(!psx_display_vram_y_wrap(272, 240));
+    assert(psx_display_vram_y_wrap(273, 240));
+    assert(psx_display_vram_y_wrap(508, 240));
+    assert(psx_display_vram_y_wrap(512, 1));
 
     PsxDisplayVerticalLayout unset = psx_display_vertical_layout(0, 100, 100);
     assert(!unset.range_set);
