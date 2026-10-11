@@ -7582,7 +7582,7 @@ static NetplayVblankEpilogue sdl_vblank_present_body(void) {
          * do NOT flush_cpu_uploads (MDEC already wrote the CPU mirror; forcing
          * FBO uploads every frame cut MotK intro from ~50 to ~30 FPS). */
 #ifndef PSX_SDL_NO_RENDER
-        if (g_gl_active && g_gl_fbo_present && !di.depth24 && !vram_y_wrap &&
+        if (g_gl_active && g_gl_fbo_present && !di.depth24 &&
             !local_viewport_crop) {
             if (wide_present) {
                 /* GPU-direct native-wide present: blit the displayed buffer's

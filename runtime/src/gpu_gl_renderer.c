@@ -71,6 +71,7 @@
 
 #include "gpu.h"
 #include "gpu_render.h"
+#include "display_scanout.h"
 #include "gl_scale_limits.h"
 #include "gpu_sw_renderer.h"
 #include "gpu_gl_renderer.h"
@@ -865,6 +866,27 @@ static int present_dirty_test(int x0, int y0, int x1, int y1) {
     for (int ty = y0 / PRES_TILE; ty <= y1 / PRES_TILE; ty++)
         if (s_present_dirty[ty] & mask) return 1;
     return 0;
+}
+
+static int present_scanout_dirty(int x, int y, int w, int h) {
+    PsxDisplayVramYSlices slices = psx_display_vram_y_slices(
+        (uint32_t)y, (uint32_t)h);
+    if (present_dirty_test(x, (int)slices.first_y, x + w - 1,
+                           (int)(slices.first_y + slices.first_height) - 1))
+        return 1;
+    return slices.second_height != 0u &&
+           present_dirty_test(x, 0, x + w - 1,
+                              (int)slices.second_height - 1);
+}
+
+static void present_scanout_clear_dirty(int x, int y, int w, int h) {
+    PsxDisplayVramYSlices slices = psx_display_vram_y_slices(
+        (uint32_t)y, (uint32_t)h);
+    present_dirty_rect(x, (int)slices.first_y, x + w - 1,
+                       (int)(slices.first_y + slices.first_height) - 1, 0);
+    if (slices.second_height != 0u)
+        present_dirty_rect(x, 0, x + w - 1,
+                           (int)slices.second_height - 1, 0);
 }
 
 static void present_force_consumed(void) {
@@ -6775,11 +6797,14 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
     flush_flat_batch();
     flush_tex_batch();
     flush_cpu_upload();
+    PsxDisplayVramYSlices y_slices = psx_display_vram_y_slices(
+        (uint32_t)disp_y, (uint32_t)h);
+    const int wraps_y = y_slices.second_height != 0u;
     if (s_force_present_remaining <= 0 &&
         s_last_present_path == GL_PRES_VRAM &&
         s_last_dx == disp_x && s_last_dy == disp_y &&
         s_last_dw == w && s_last_dh == h &&
-        !present_dirty_test(disp_x, disp_y, disp_x + w - 1, disp_y + h - 1) &&
+        !present_scanout_dirty(disp_x, disp_y, w, h) &&
         !host_osd_needs_present() &&
         !psx_present_vsync_owns_cadence() &&
         !gl_renderer_interpolation_owns_cadence()) {
@@ -6823,25 +6848,39 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
     if (lx != 0 || ly != 0 || lw != ww || lh != wh) {
         glClearColor(0.f,0.f,0.f,1.f); glClear(GL_COLOR_BUFFER_BIT);
     }
-    int interp_pair = interp_capture(
+    /* The interpolation capture is a rectangular FBO blit and therefore
+     * cannot represent a scanout crossing row 511. Direct present below uses
+     * texture repeat and remains entirely GPU-side for those rare frames. */
+    int interp_pair = !wraps_y && interp_capture(
         interp_fbo, src_x, disp_y, w, h, linear, force_4_3, GL_PRES_VRAM,
-        disp_x, disp_y,
-        present_dirty_test(disp_x, disp_y, disp_x + w - 1, disp_y + h - 1));
+        disp_x, disp_y, present_scanout_dirty(disp_x, disp_y, w, h));
     if (interp_pair) {
         /* Temporal blending owns this stock frame interval. Capture hold-last
          * before pacing; every blend and Swap remains on this context/thread. */
         hold_capture_native_fbo(src_fbo, src_x, disp_y, w, h, force_4_3, linear);
         interp_present_source_interval();
         gl_perf_present_exit(0);
-        present_dirty_rect(disp_x, disp_y, disp_x + w - 1, disp_y + h - 1, 0);
+        present_scanout_clear_dirty(disp_x, disp_y, w, h);
         present_force_consumed();
         s_last_present_path = GL_PRES_VRAM;
         s_last_dx = disp_x; s_last_dy = disp_y; s_last_dw = w; s_last_dh = h;
         return;
     }
     present_bezel(ww, wh, lx, ly, lw, lh);
+    if (wraps_y) {
+        /* A single repeated texture sample preserves the exact output filter
+         * and scaling used by ordinary frames while continuing row 511 at row
+         * zero. This avoids alternating GPU and CPU presentation when a title
+         * flips between two vertically offset buffers. */
+        glBindTexture(GL_TEXTURE_2D, src_tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    }
     present_target_quad(src_tex, src_tw, VRAM_H,
                         src_x, disp_y, w, h, linear, lx, ly, lw, lh, 1, 1, src_scale);
+    if (wraps_y) {
+        glBindTexture(GL_TEXTURE_2D, src_tex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
     pres_record(GL_PRES_VRAM, disp_x, disp_y, w, h, lx, ly, lw, lh);
     hold_capture_drawable();
     latency_ring_mark(LAT_SWAP_BEGIN);
@@ -6849,11 +6888,16 @@ void gl_renderer_present_vram(int disp_x, int disp_y, int w, int h, int linear,
     latency_ring_mark(LAT_SWAP_END);
     s_probe_swap++;
     gl_perf_present_exit(0);
-    present_dirty_rect(disp_x, disp_y, disp_x + w - 1, disp_y + h - 1, 0);
+    present_scanout_clear_dirty(disp_x, disp_y, w, h);
     present_force_consumed();
     s_last_present_path = GL_PRES_VRAM;
     s_last_dx = disp_x; s_last_dy = disp_y; s_last_dw = w; s_last_dh = h;
-    coh_record(GL_COH_PRESENT, disp_x, disp_y, disp_x + w - 1, disp_y + h - 1);
+    coh_record(GL_COH_PRESENT, disp_x, (int)y_slices.first_y,
+               disp_x + w - 1,
+               (int)(y_slices.first_y + y_slices.first_height) - 1);
+    if (wraps_y)
+        coh_record(GL_COH_PRESENT, disp_x, 0, disp_x + w - 1,
+                   (int)y_slices.second_height - 1);
 }
 
 /* Native-wide fast path: authoritatively copy the canonical 4:3 framebuffer

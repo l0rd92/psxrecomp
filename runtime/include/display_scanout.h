@@ -46,6 +46,26 @@ static inline int psx_display_vram_y_wrap(uint32_t display_y,
            source_height > 512u - display_y;
 }
 
+typedef struct {
+    uint32_t first_y;
+    uint32_t first_height;
+    uint32_t second_height;
+} PsxDisplayVramYSlices;
+
+/* Split a (maximum 512-row) scanout into the two physical VRAM pieces which
+ * implement the PS1's vertical address wrap. Most frames have only the first
+ * piece; a display beginning near row 511 continues from row zero. */
+static inline PsxDisplayVramYSlices psx_display_vram_y_slices(
+    uint32_t display_y, uint32_t source_height)
+{
+    PsxDisplayVramYSlices out;
+    out.first_y = display_y & 511u;
+    const uint32_t available = 512u - out.first_y;
+    out.first_height = source_height < available ? source_height : available;
+    out.second_height = source_height - out.first_height;
+    return out;
+}
+
 /* Canvas-origin clipping belongs only to staged depth24 presentation.
  * Ordinary 15-bit renderers read their source rectangle directly. */
 static inline uint32_t psx_display_clip_source_height(
