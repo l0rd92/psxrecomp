@@ -942,5 +942,9 @@ void psx_crash_trace_install_handlers(void) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
     SetConsoleCtrlHandler(psx_console_ctrl_handler, TRUE);
 #endif
+#ifndef PSX_NO_DEBUG_TOOLS
+    /* Clean exits are useful evidence during development, but a production
+     * package should only create a report when something actually fails. */
     atexit(psx_atexit_handler);
+#endif
 }

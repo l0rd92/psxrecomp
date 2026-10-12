@@ -13953,8 +13953,14 @@ int main(int argc, char** argv) {
     auto run_deferred_overlay_init = [&]() {
         std::filesystem::path exe_dir = exe_dir_from_argv(argv[0]);
         std::string cache_dir = (exe_dir / "cache").string();
+        /* The autocompile setup below keeps a path in its command contract,
+         * even when a production build has no capture producer. Merely naming
+         * this path does not create the file. */
         std::filesystem::path captures_path =
-            resolve_overlay_capture_path(deferred_overlay_project_root, exe_dir, game_id);
+            exe_dir / "overlay_captures.json";
+#ifndef PSX_NO_DEBUG_TOOLS
+        captures_path = resolve_overlay_capture_path(
+            deferred_overlay_project_root, exe_dir, game_id);
         if (!overlay_capture_set_path(captures_path.string().c_str())) {
             captures_path = exe_dir / "overlay_captures.json";
             if (!overlay_capture_set_path(captures_path.string().c_str())) {
@@ -13986,6 +13992,13 @@ int main(int argc, char** argv) {
             capture_persist_dir.empty() ? nullptr :
                 capture_persist_dir.c_str(),
             game_id.c_str());
+#else
+        /* Production packages must not turn their install directory into a
+         * diagnostic workspace during ordinary play. Development builds keep
+         * the additive capture store; release builds still retain fatal crash
+         * reporting without recording overlay snapshots on every run. */
+        overlay_capture_set_enabled(0);
+#endif
         overlay_loader_init(cache_dir.c_str(), game_id.c_str(),
                             deferred_overlay_config_hash);
         for (uint32_t addr : deferred_overlay_native_block) {
@@ -15620,8 +15633,12 @@ session_reboot:
 #ifdef PSX_COSIM
         cosim_init();  /* first-divergence oracle server */
 #endif
-        /* Heartbeat always on — see freeze_heartbeat.c rationale. */
+#ifndef PSX_NO_DEBUG_TOOLS
+        /* Continuous heartbeat and automatic freeze dumps belong to
+         * diagnostics builds. Fatal crash reporting remains installed above
+         * for production builds. */
         freeze_heartbeat_start("psx-runtime");
+#endif
     } else {
 #ifndef PSX_NO_DEBUG_TOOLS
         (void)debug_port;
